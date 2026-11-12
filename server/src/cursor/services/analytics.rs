@@ -14,6 +14,7 @@ use crate::{api::cursor::proxy, Error, Result};
 
 pub const BOOTSTRAP_STATSIG_PATH: &str = "/aiserver.v1.AnalyticsService/BootstrapStatsig";
 const AGENT_RETRIES_GATE: &str = "nal_agent_retries";
+const LOCAL_LOOP_GATE: &str = "agent_host_local_loop";
 const LOCAL_RULE: &str = "local_enabled";
 
 #[derive(Clone, PartialEq, Message)]
@@ -98,6 +99,7 @@ fn local_response() -> Result<Response<Body>> {
 
 fn enable_agent_retries(config: &mut Value) -> Result<()> {
     let gate_key = statsig_key(config, AGENT_RETRIES_GATE);
+    let local_loop_key = statsig_key(config, LOCAL_LOOP_GATE);
     let root = config
         .as_object_mut()
         .ok_or_else(|| Error::Protocol("Statsig bootstrap config must be an object".into()))?;
@@ -106,7 +108,10 @@ fn enable_agent_retries(config: &mut Value) -> Result<()> {
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .ok_or_else(|| Error::Protocol("Statsig feature_gates must be an object".into()))?;
-    gates.insert(gate_key.clone(), enabled_gate(&gate_key));
+    gates.insert(gate_key.clone(), local_gate(&gate_key, true));
+    // RunInference carries a different message schema. This gateway implements
+    // the backend AgentService loop, which Cursor still supports as a fallback.
+    gates.insert(local_loop_key.clone(), local_gate(&local_loop_key, false));
     Ok(())
 }
 
@@ -127,10 +132,10 @@ fn djb2(value: &str) -> String {
         .to_string()
 }
 
-fn enabled_gate(name: &str) -> Value {
+fn local_gate(name: &str, value: bool) -> Value {
     json!({
         "name": name,
-        "value": true,
+        "value": value,
         "rule_id": LOCAL_RULE,
         "ruleID": LOCAL_RULE,
         "group_name": LOCAL_RULE,
@@ -144,6 +149,28 @@ fn enabled_gate(name: &str) -> Value {
         "id_type": "userID",
         "idType": "userID"
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatibility_gates_select_backend_loop_for_all_bootstrap_hash_formats() {
+        for hash in ["none", "djb2", "sha256"] {
+            let mut config = json!({
+                "hash_used": hash,
+                "feature_gates": {"unrelated": {"value": true}}
+            });
+            let loop_key = statsig_key(&config, LOCAL_LOOP_GATE);
+            let retry_key = statsig_key(&config, AGENT_RETRIES_GATE);
+            config["feature_gates"][&loop_key] = json!({"value": true});
+            enable_agent_retries(&mut config).unwrap();
+            assert_eq!(config["feature_gates"][&loop_key]["value"], false);
+            assert_eq!(config["feature_gates"][&retry_key]["value"], true);
+            assert_eq!(config["feature_gates"]["unrelated"]["value"], true);
+        }
+    }
 }
 
 fn unary_payload(body: &Bytes) -> Result<(bool, &[u8])> {

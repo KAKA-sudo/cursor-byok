@@ -94,6 +94,64 @@ fn captured_kv_ack_hex_decodes_as_agent_client_message() {
     ));
 }
 
+#[test]
+fn bidi_append_binary_and_hex_decode_to_the_same_client_message() {
+    let payload = hex::decode("1a0408011a00").unwrap();
+    let mut request = ai::BidiAppendRequest {
+        request_id: Some(ai::BidiRequestId {
+            request_id: "binary-compatibility".into(),
+        }),
+        append_seqno: 7,
+        data_binary: payload.clone(),
+        ..Default::default()
+    };
+    let binary = cursor::bidi::decode(&request).unwrap();
+    request.data_binary.clear();
+    request.data = hex::encode(&payload);
+    let hex = cursor::bidi::decode(&request).unwrap();
+    assert_eq!(binary.request_id, "binary-compatibility");
+    assert_eq!(binary.request_id, hex.request_id);
+    assert_eq!(binary.seqno, 7);
+    assert_eq!(binary.seqno, hex.seqno);
+    assert_eq!(binary.message.encode_to_vec(), payload);
+    assert_eq!(binary.message, hex.message);
+}
+
+#[test]
+fn bidi_append_rejects_malformed_binary_protobuf() {
+    let request = ai::BidiAppendRequest {
+        request_id: Some(ai::BidiRequestId {
+            request_id: "malformed-binary".into(),
+        }),
+        data_binary: vec![0xff],
+        ..Default::default()
+    };
+    assert!(cursor::bidi::decode(&request).is_err());
+}
+
+#[test]
+fn bidi_append_binary_still_requires_request_id() {
+    let request = ai::BidiAppendRequest {
+        data_binary: hex::decode("1a0408011a00").unwrap(),
+        ..Default::default()
+    };
+    let error = cursor::bidi::decode(&request).err().unwrap().to_string();
+    assert!(error.contains("BidiAppend request_id is required"));
+}
+
+#[test]
+fn bidi_append_rejects_malformed_hex() {
+    let request = ai::BidiAppendRequest {
+        request_id: Some(ai::BidiRequestId {
+            request_id: "malformed-hex".into(),
+        }),
+        data: "not hex".into(),
+        ..Default::default()
+    };
+    let error = cursor::bidi::decode(&request).err().unwrap().to_string();
+    assert!(error.contains("invalid BidiAppend hex"));
+}
+
 #[tokio::test]
 async fn bidi_append_gzip_body_is_decompressed_before_protobuf_decode() {
     let (_directory, store) = fixtures::temp_store().await;
