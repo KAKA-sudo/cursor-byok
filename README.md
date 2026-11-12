@@ -3,6 +3,9 @@
 <div align="center">
 
 # cursor-byok
+
+**Windows compatibility build:** [Installer, source code, and build instructions](./WINDOWS-COMPAT-CN.md)
+
 cursor-byok is a local implementation of Cursor's backend.
 <br>
 <br>
